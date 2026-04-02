@@ -10,22 +10,37 @@ export async function POST(request: NextRequest) {
 
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
-
     if (!user) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
     const body = await request.json()
     const message = body?.message
+    let conversationId = body?.conversationId
+
     if (!message?.trim()) {
       return Response.json({ error: 'Message is required' }, { status: 400 })
     }
 
-    // Load existing history from DB
+    // Create a new conversation if none provided
+    if (!conversationId) {
+      const title = message.slice(0, 60)
+      const { data: conv, error: convError } = await supabase
+        .from('conversations')
+        .insert({ user_id: user.id, title })
+        .select('id')
+        .single()
+      if (convError) {
+        return Response.json({ error: `Failed to create conversation: ${convError.message}` }, { status: 500 })
+      }
+      conversationId = conv.id
+    }
+
+    // Load history for this conversation
     const { data: history, error: historyError } = await supabase
       .from('messages')
       .select('role, content')
-      .eq('user_id', user.id)
+      .eq('conversation_id', conversationId)
       .order('created_at', { ascending: true })
 
     if (historyError) {
@@ -35,6 +50,7 @@ export async function POST(request: NextRequest) {
     // Save user message
     await supabase.from('messages').insert({
       user_id: user.id,
+      conversation_id: conversationId,
       role: 'user',
       content: message,
     })
@@ -54,37 +70,82 @@ export async function POST(request: NextRequest) {
     // Save assistant reply
     await supabase.from('messages').insert({
       user_id: user.id,
+      conversation_id: conversationId,
       role: 'assistant',
       content: reply,
     })
 
-    return Response.json({ reply })
+    return Response.json({ reply, conversationId })
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
     return Response.json({ error: msg }, { status: 500 })
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
-
     if (!user) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { data: messages, error } = await supabase
-      .from('messages')
-      .select('id, role, content, created_at')
+    const conversationId = request.nextUrl.searchParams.get('conversationId')
+
+    if (conversationId) {
+      // Load messages for a specific conversation
+      const { data: messages, error } = await supabase
+        .from('messages')
+        .select('id, role, content, created_at')
+        .eq('conversation_id', conversationId)
+        .order('created_at', { ascending: true })
+
+      if (error) {
+        return Response.json({ error: error.message }, { status: 500 })
+      }
+      return Response.json({ messages: messages ?? [] })
+    }
+
+    // Load all conversations
+    const { data: conversations, error } = await supabase
+      .from('conversations')
+      .select('id, title, created_at')
       .eq('user_id', user.id)
-      .order('created_at', { ascending: true })
+      .order('created_at', { ascending: false })
 
     if (error) {
       return Response.json({ error: error.message }, { status: 500 })
     }
+    return Response.json({ conversations: conversations ?? [] })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unknown error'
+    return Response.json({ error: msg }, { status: 500 })
+  }
+}
 
-    return Response.json({ messages: messages ?? [] })
+export async function DELETE(request: NextRequest) {
+  try {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const conversationId = request.nextUrl.searchParams.get('conversationId')
+    if (!conversationId) {
+      return Response.json({ error: 'conversationId is required' }, { status: 400 })
+    }
+
+    const { error } = await supabase
+      .from('conversations')
+      .delete()
+      .eq('id', conversationId)
+      .eq('user_id', user.id)
+
+    if (error) {
+      return Response.json({ error: error.message }, { status: 500 })
+    }
+    return Response.json({ success: true })
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
     return Response.json({ error: msg }, { status: 500 })
