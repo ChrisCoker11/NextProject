@@ -37,10 +37,16 @@ export async function POST(request: NextRequest) {
     parts: [{ text: msg.content }],
   }))
 
-  const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
-  const chat = model.startChat({ history: chatHistory })
-  const result = await chat.sendMessage(message)
-  const reply = result.response.text()
+  let reply: string
+  try {
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
+    const chat = model.startChat({ history: chatHistory })
+    const result = await chat.sendMessage(message)
+    reply = result.response.text()
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Gemini request failed'
+    return Response.json({ error: message }, { status: 500 })
+  }
 
   // Save assistant reply
   await supabase.from('messages').insert({
