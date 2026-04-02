@@ -19,7 +19,7 @@ export default function SignupPage() {
   }
 
   return (
-    <div className="flex min-h-full flex-col items-center justify-center bg-zinc-50 dark:bg-black px-4">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-50 dark:bg-black px-4">
       <div className="w-full max-w-sm space-y-6">
         <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-50">Create an account</h1>
 
