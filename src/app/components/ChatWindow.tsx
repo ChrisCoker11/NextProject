@@ -24,7 +24,7 @@ export default function ChatWindow() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: { preventDefault(): void }) {
     e.preventDefault()
     const text = input.trim()
     if (!text || loading) return
@@ -33,15 +33,24 @@ export default function ChatWindow() {
     setMessages((prev) => [...prev, { role: 'user', content: text }])
     setLoading(true)
 
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text }),
-    })
-    const data = await res.json()
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text }),
+      })
+      const data = await res.json()
 
-    setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }])
-    setLoading(false)
+      if (!res.ok || data.error) {
+        setMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${data.error ?? 'Something went wrong'}` }])
+      } else {
+        setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }])
+      }
+    } catch {
+      setMessages((prev) => [...prev, { role: 'assistant', content: 'Error: Failed to reach the server' }])
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -93,7 +102,7 @@ export default function ChatWindow() {
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
-                handleSubmit(e as unknown as React.FormEvent)
+                handleSubmit(e)
               }
             }}
             rows={1}
