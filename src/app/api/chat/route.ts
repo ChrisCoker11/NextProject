@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { GoogleGenerativeAI } from '@google/generative-ai'
+import { getSportsContext } from '@/lib/sports'
 import type { NextRequest } from 'next/server'
 
 export async function POST(request: NextRequest) {
@@ -61,10 +62,13 @@ export async function POST(request: NextRequest) {
       parts: [{ text: msg.content }],
     }))
 
+    const sportsContext = await getSportsContext(message)
+    const prompt = sportsContext ? `${sportsContext}\n\nUser: ${message}` : message
+
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
     const chat = model.startChat({ history: chatHistory })
-    const result = await chat.sendMessage(message)
+    const result = await chat.sendMessage(prompt)
     const reply = result.response.text()
 
     // Save assistant reply
