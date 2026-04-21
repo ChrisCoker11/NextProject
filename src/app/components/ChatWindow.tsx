@@ -72,19 +72,50 @@ export default function ChatWindow() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text, conversationId: activeId }),
       })
-      const data = await res.json()
 
-      if (!res.ok || data.error) {
+      if (!res.ok) {
+        const data = await res.json()
         setMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${data.error ?? 'Something went wrong'}` }])
-      } else {
-        setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }])
+        return
+      }
 
-        // If this was a new conversation, add it to the sidebar
-        if (!activeId && data.conversationId) {
-          setActiveId(data.conversationId)
-          const title = text.slice(0, 60)
-          setConversations((prev) => [{ id: data.conversationId, title, created_at: new Date().toISOString() }, ...prev])
+      const newConversationId = res.headers.get('X-Conversation-Id')
+
+      // Add an empty assistant message now — we'll fill it in as chunks stream in
+      setMessages((prev) => [...prev, { role: 'assistant', content: '' }])
+
+      const reader = res.body!.getReader()
+      const decoder = new TextDecoder()
+      let fullText = ''
+      let firstChunk = true
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        // Hide the loading dots the moment the first word arrives
+        if (firstChunk) {
+          setLoading(false)
+          firstChunk = false
         }
+
+        fullText += decoder.decode(value, { stream: true })
+
+        // Update the last message (the empty assistant one we added above) with the growing text
+        setMessages((prev) => {
+          const updated = [...prev]
+          updated[updated.length - 1] = { role: 'assistant', content: fullText }
+          return updated
+        })
+      }
+
+      // If this was a new conversation, register it in the sidebar
+      if (!activeId && newConversationId) {
+        setActiveId(newConversationId)
+        setConversations((prev) => [
+          { id: newConversationId, title: text.slice(0, 60), created_at: new Date().toISOString() },
+          ...prev,
+        ])
       }
     } catch {
       setMessages((prev) => [...prev, { role: 'assistant', content: 'Error: Failed to reach the server' }])
@@ -168,7 +199,8 @@ export default function ChatWindow() {
               </div>
             </div>
           ))}
-          {loading && (
+          {/* Show bounce dots only while waiting for the first chunk — once text starts streaming they disappear */}
+          {loading && messages[messages.length - 1]?.role !== 'assistant' && (
             <div className="flex justify-start">
               <div className="rounded-2xl px-4 py-2.5 bg-white border border-zinc-200 dark:bg-zinc-900 dark:border-zinc-800">
                 <span className="flex gap-1">

@@ -1,12 +1,12 @@
 import { createClient } from '@/lib/supabase/server'
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import Anthropic from '@anthropic-ai/sdk'
 import { getSportsContext } from '@/lib/sports'
 import type { NextRequest } from 'next/server'
 
 export async function POST(request: NextRequest) {
   try {
-    if (!process.env.GEMINI_API_KEY) {
-      return Response.json({ error: 'GEMINI_API_KEY is not set' }, { status: 500 })
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return Response.json({ error: 'ANTHROPIC_API_KEY is not set' }, { status: 500 })
     }
 
     const supabase = await createClient()
@@ -56,30 +56,67 @@ export async function POST(request: NextRequest) {
       content: message,
     })
 
-    // Build Gemini chat history
-    const chatHistory = (history ?? []).map((msg) => ({
-      role: msg.role === 'user' ? 'user' : 'model',
-      parts: [{ text: msg.content }],
-    }))
-
     const sportsContext = await getSportsContext(message)
-    const prompt = sportsContext ? `${sportsContext}\n\nUser: ${message}` : message
+    const userContent = sportsContext ? `${sportsContext}\n\nUser: ${message}` : message
 
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
-    const chat = model.startChat({ history: chatHistory })
-    const result = await chat.sendMessage(prompt)
-    const reply = result.response.text()
+    // Trim to last 20 messages so long conversations never hit Claude's token limit
+    const recentHistory = (history ?? []).slice(-20)
 
-    // Save assistant reply
-    await supabase.from('messages').insert({
-      user_id: user.id,
-      conversation_id: conversationId,
-      role: 'assistant',
-      content: reply,
+    // Build Claude message history
+    const chatHistory: Anthropic.MessageParam[] = recentHistory.map((msg) => ({
+      role: msg.role === 'user' ? 'user' : 'assistant',
+      content: msg.content,
+    }))
+    chatHistory.push({ role: 'user', content: userContent })
+
+    const systemPrompt = process.env.CHATBOT_SYSTEM_PROMPT
+      ?? 'You are a helpful, knowledgeable assistant. Be concise and direct. When you are unsure, say so.'
+
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+    const stream = anthropic.messages.stream({
+      model: 'claude-opus-4-7',
+      max_tokens: 16000,
+      thinking: { type: 'adaptive' },
+      // cache_control tells Anthropic to cache this system prompt — after the first request
+      // it's served at ~10% token cost instead of full price
+      system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+      messages: chatHistory,
     })
 
-    return Response.json({ reply, conversationId })
+    // Stream text chunks to the client as they arrive instead of waiting for the full response
+    const encoder = new TextEncoder()
+    const readable = new ReadableStream({
+      async start(controller) {
+        let fullText = ''
+        try {
+          for await (const event of stream) {
+            if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+              fullText += event.delta.text
+              controller.enqueue(encoder.encode(event.delta.text))
+            }
+          }
+        } finally {
+          controller.close()
+          // Save the complete reply to the DB after the stream finishes
+          if (fullText) {
+            await supabase.from('messages').insert({
+              user_id: user.id,
+              conversation_id: conversationId,
+              role: 'assistant',
+              content: fullText,
+            })
+          }
+        }
+      },
+    })
+
+    return new Response(readable, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        // Send conversationId in a header since we can no longer use JSON body
+        'X-Conversation-Id': conversationId,
+      },
+    })
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error'
     return Response.json({ error: msg }, { status: 500 })
